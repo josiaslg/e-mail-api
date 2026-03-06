@@ -104,3 +104,7 @@ uvicorn app.main:app --reload --port 8000
 - Arquivo pedido no objetivo: `deploy/service.systemd`
 - Exemplo de reverse proxy TLS: `deploy/nginx.conf`
 - Manual completo passo a passo: `DEPLOY_UBUNTU_24.04.md`
+
+## Manual de uso da API (formato para outra IA)
+
+- Arquivo: `API_USAGE_MANUAL.txt`
