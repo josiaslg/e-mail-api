@@ -1,0 +1,286 @@
+PYTHON-MTA-API-GATEWAY — MANUAL DE USO DA API (PARA OUTRA IA)
+=============================================================
+
+OBJETIVO
+--------
+Este manual descreve como consumir a API Gateway SMTP/IMAP.
+Ele foi estruturado para ser lido por outra IA de programação.
+
+A IA cliente deve:
+1) sempre enviar X-API-KEY;
+2) interpretar o campo de sucesso/erro com base no HTTP status e corpo;
+3) nunca registrar senha em logs;
+4) tratar respostas 4xx/5xx com fallback e retry controlado.
+
+
+BASE URL
+--------
+Definida no ambiente de deploy, por exemplo:
+- https://api.example.com
+
+
+SEGURANÇA (OBRIGATÓRIO)
+-----------------------
+Camadas de autenticação:
+1) Gateway: header X-API-KEY (obrigatório em endpoints protegidos)
+2) Mail server: credenciais user_auth/pass_auth no body OU HTTP Basic Auth
+
+Header obrigatório:
+- X-API-KEY: <valor_de_GATEWAY_API_KEY>
+
+Content-Type:
+- application/json
+
+
+ENDPOINTS
+=========
+
+[1] HEALTHCHECK
+---------------
+Método: GET
+Rota: /healthz
+Auth Gateway: NÃO obrigatória (conforme implementação atual)
+
+Finalidade:
+- Verificar se a aplicação está de pé e com configuração mínima válida.
+
+Resposta de sucesso:
+HTTP 200
+{
+  "status": "success",
+  "detail": "ok"
+}
+
+Sinalização:
+- erro=false quando HTTP=200 e status="success"
+- erro=true para qualquer outro HTTP
+
+Possíveis falhas:
+- HTTP 500 quando configuração de ambiente é inválida/ausente.
+
+
+[2] ENVIAR E-MAIL (SMTP)
+------------------------
+Método: POST
+Rota principal: /v1/send
+Alias: /send
+Auth Gateway: SIM (X-API-KEY)
+
+Body JSON (campos):
+- to (string email, obrigatório)
+- subject (string, obrigatório)
+- body (string, obrigatório, máx 100000 chars)
+- user_auth (string, opcional se usar Basic Auth)
+- pass_auth (string, opcional se usar Basic Auth)
+
+Exemplo de request:
+POST /v1/send
+Headers:
+  X-API-KEY: <CHAVE>
+  Content-Type: application/json
+Body:
+{
+  "to": "destino@dominio.com",
+  "subject": "Assunto teste",
+  "body": "Mensagem de teste",
+  "user_auth": "usuario@dominio.com",
+  "pass_auth": "senha"
+}
+
+Resposta de sucesso:
+HTTP 200
+{
+  "status": "success",
+  "detail": "Email sent successfully"
+}
+
+Sinalização de sucesso:
+- erro=false quando HTTP=200 e status="success"
+
+Possíveis erros (mapeamento):
+- HTTP 400:
+  - credenciais de e-mail ausentes quando auth é exigida
+  - payload inválido (validação Pydantic)
+- HTTP 401:
+  - X-API-KEY ausente/inválida
+- HTTP 422:
+  - JSON com tipo/formato inválido (ex: email malformado)
+- HTTP 500:
+  - configuração inválida (porta, modo, env)
+- HTTP 502:
+  - falha de conexão/TLS/upstream SMTP
+- HTTP 504:
+  - timeout de operação SMTP
+
+Formato típico de erro FastAPI:
+{
+  "detail": "<mensagem>"
+}
+ou para validação:
+{
+  "detail": [
+    {
+      "loc": ["body", "to"],
+      "msg": "value is not a valid email address",
+      "type": "value_error"
+    }
+  ]
+}
+
+
+[3] LISTAR INBOX (IMAP)
+-----------------------
+Método: POST
+Rota principal: /v1/inbox
+Alias: /fetch
+Auth Gateway: SIM (X-API-KEY)
+
+Body JSON (campos):
+- user_auth (string, opcional se usar Basic Auth)
+- pass_auth (string, opcional se usar Basic Auth)
+- limit (int, opcional, default=10, min=1, max=100)
+
+Exemplo de request:
+POST /v1/inbox
+Headers:
+  X-API-KEY: <CHAVE>
+  Content-Type: application/json
+Body:
+{
+  "user_auth": "usuario@dominio.com",
+  "pass_auth": "senha",
+  "limit": 5
+}
+
+Resposta de sucesso:
+HTTP 200
+{
+  "messages": [
+    {
+      "uid": "12345",
+      "subject": "Assunto",
+      "sender": "remetente@dominio.com",
+      "date": "Mon, 01 Jan 2024 12:00:00 +0000",
+      "body": "conteúdo em texto"
+    }
+  ]
+}
+
+Sinalização de sucesso:
+- erro=false quando HTTP=200 e existe campo "messages" (array)
+
+Possíveis erros (mapeamento):
+- HTTP 400: credenciais ausentes quando exigidas
+- HTTP 401: X-API-KEY inválida
+- HTTP 422: JSON inválido (tipos/campos)
+- HTTP 500: erro de configuração/env
+- HTTP 502: erro de conexão/TLS/upstream IMAP
+- HTTP 504: timeout em operação IMAP
+
+Formato típico de erro:
+{
+  "detail": "<mensagem>"
+}
+
+
+CONTRATO DE INTERPRETAÇÃO PARA OUTRA IA
+=======================================
+
+A) Regra de sucesso/erro (determinística)
+-----------------------------------------
+1. Se HTTP entre 200 e 299 => sucesso lógico, salvo inconsistência de schema.
+2. Se HTTP >= 400 => erro lógico.
+3. Em /v1/send sucesso exige:
+   - status == "success"
+4. Em /v1/inbox sucesso exige:
+   - campo messages presente e do tipo lista.
+
+
+B) Estrutura canônica de retorno para a IA cliente
+--------------------------------------------------
+A IA cliente deve normalizar a resposta original para o modelo abaixo:
+
+{
+  "erro": true|false,
+  "http_status": <int>,
+  "acao": "healthz|send|inbox",
+  "mensagem": "resumo curto",
+  "detalhe": <objeto ou string original de detail/messages>,
+  "retriavel": true|false
+}
+
+Heurística retriável:
+- retriavel=true para 502/504
+- retriavel=false para 400/401/422
+- retriavel=false para 500 (até corrigir config)
+
+
+C) Tabela de decisão rápida
+---------------------------
+- 200: OK (erro=false)
+- 400: erro de entrada/credenciais faltantes (erro=true)
+- 401: erro de autenticação gateway (erro=true)
+- 422: erro de contrato JSON (erro=true)
+- 500: erro de configuração servidor (erro=true)
+- 502: erro upstream mail (erro=true, retriável)
+- 504: timeout upstream mail (erro=true, retriável)
+
+
+D) Política de retry recomendada
+--------------------------------
+Para 502/504:
+- tentativas: 3
+- backoff: 1s, 2s, 4s
+- jitter: +-20%
+
+Não aplicar retry para 400/401/422.
+Para 500, corrigir ambiente antes de nova tentativa.
+
+
+E) Regras de segurança para a IA cliente
+----------------------------------------
+- Nunca imprimir pass_auth ou Authorization Basic decodificado.
+- Se logar request, mascarar:
+  - X-API-KEY => manter só 4 últimos caracteres
+  - pass_auth => sempre "***"
+- Não persistir corpo de e-mail sensível sem necessidade de negócio.
+
+
+F) Exemplos de cURL
+-------------------
+1) Send:
+
+curl -sS -X POST "https://api.example.com/v1/send" \
+  -H "X-API-KEY: SUA_CHAVE" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "to":"destino@dominio.com",
+    "subject":"Teste",
+    "body":"Olá",
+    "user_auth":"usuario@dominio.com",
+    "pass_auth":"senha"
+  }'
+
+2) Inbox:
+
+curl -sS -X POST "https://api.example.com/v1/inbox" \
+  -H "X-API-KEY: SUA_CHAVE" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user_auth":"usuario@dominio.com",
+    "pass_auth":"senha",
+    "limit":10
+  }'
+
+
+G) Checklist para integrar outra IA
+-----------------------------------
+[ ] Configurar BASE_URL
+[ ] Configurar X-API-KEY
+[ ] Implementar parser de erro/sucesso por HTTP
+[ ] Implementar normalizador canônico (erro/http_status/acao/mensagem/detalhe/retriavel)
+[ ] Implementar retry apenas para 502/504
+[ ] Implementar mascaramento de segredos em log
+
+
+FIM DO MANUAL
