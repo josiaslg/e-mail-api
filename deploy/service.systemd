@@ -1,0 +1,18 @@
+[Unit]
+Description=Python MTA API Gateway (FastAPI)
+After=network.target
+
+[Service]
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/python-mta-api-gateway
+EnvironmentFile=/opt/python-mta-api-gateway/.env
+ExecStart=/opt/python-mta-api-gateway/.venv/bin/gunicorn app.main:app \
+  --workers 3 \
+  --worker-class uvicorn.workers.UvicornWorker \
+  --bind 127.0.0.1:8000
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
